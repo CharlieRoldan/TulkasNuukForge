@@ -1,0 +1,127 @@
+'''
+SCRAPPER MERCADOLIBRE - API
+---------------------------
+Version: 2.0
+Autor: Juan Jose Sisti
+Ultima Revision: 2018-03-26
+
+Descripcion:
+Bajada de datos desde mercadolibre, utilizando el acceso via API POST que proveen.
+El proceso esta preparado para descargar dos tipos de elementos, inmuebles y vehiculos
+
+Se puede configurar modo DEBUG (set_debug(true)) para solo procesar los primeros elementos, esto
+tambien activa el modo "verbose" con salida detallada
+
+Requisitos de instalacion:
+
+- Python 3.x
+- Libreriras (incluye los comandos de instalacion)
+    pip install numpy
+    pip install pandas
+    pip install pyodbc
+'''
+
+from time import gmtime, strftime  # Para obtener la fecha actual
+
+import pandas as pd
+import requests  # Bajada de datos URL
+
+
+class inmueble:
+    mercadolibre_id = 'MLA79242'
+    tabla = 'mercadolibre_inmueble'  # Utilizada para la carga en SQL
+    columnas = ['fecha', 'producto_latitud', 'producto_longitud', 'url', 'tipo_propiedad']
+
+    # Conversion de json a dataframe y rearmado de datos para que sea formato tabla
+    def adapt(self, items):
+        data = pd.DataFrame(items)
+        data = data.groupby(['id']).first().reset_index()  # Elimina duplicados
+
+        largo = data.shape[0]
+        for i in range(0, largo):
+            if (i % 100 == 0): print("Procesando: " + str(i) + " de " + str(largo))
+            try:
+                # La fecha es la fecha de ejecucion, como este es un proceso diario, la necesitamos
+                # para poder identificar las diferentes corridas
+                data.loc[i, 'fecha'] = strftime("%Y_%m_%d", gmtime())
+                data.loc[i, 'mercadolibre_id'] = data.loc[i, 'id']
+                data.loc[i, 'producto_latitud'] = data.loc[i, 'location']['latitude']
+                data.loc[i, 'producto_longitud'] = data.loc[i, 'location']['longitude']
+                data.loc[i, 'url'] = data.loc[i, 'permalink']
+                dataAttr = pd.DataFrame(data.loc[i, 'attributes'])
+                if (dataAttr.loc[dataAttr['id'] == 'PROPERTY_TYPE']['value_name'].count() > 0):
+                    data.loc[i, 'tipo_propiedad'] = dataAttr.loc[dataAttr['id'] == 'PROPERTY_TYPE']['value_name'].item()
+                else:
+                    data.loc[i, 'tipo_propiedad'] = 'DESCONOCIDO'
+
+            except Exception as e:
+                print('Error adaptando: ' + str(i) + ' - ' + str(data.loc[i, 'mercadolibre_id']) + ' - ' + ' -- %s' % e)
+                pass
+        data = data.fillna('')  # Los nulos los completamos con un string vacio
+        return data[self.columnas]
+
+
+class mercadolibreAPI:
+    debug = False  # Limita el procesamiento a los primeros elementos del primer indice, habilida la salida por pantalla de mensajes
+    query = None
+    objeto = None
+    ml_url = 'http://api.mercadolibre.com/sites/MLA/search?category='
+    items = []
+    pd.options.display.float_format = '{:.2f}'.format
+
+    def set_debug(self, debug):
+        self.debug = debug
+        if self.debug: print("Modo Debug ENCENDIDO")
+
+    def request_get(self, url):
+        if self.debug: print("Procesando url: ", url)
+        try:
+            return requests.get(url).json()
+        except:
+            return None
+
+    def search(self, objeto: object) -> object:
+        self.objeto = objeto()
+        url = self.ml_url + self.objeto.mercadolibre_id + '&_PublishedToday_YES'
+        print("Buscando: " + url)
+        if (self.debug):
+            paginators = 5
+        else:
+            paginators = round(self.request_get(url)['paging']['total'] / 50) + 1
+
+        # Limito un poco los paginators, solo me traigo las primeras XX paginas
+        # if(paginators>200): paginators = 200
+
+        for offset in range(0, paginators):
+            url = self.ml_url + self.objeto.mercadolibre_id + '&_PublishedToday_YES&limit=50&offset=' + str(offset * 50)
+            jsdata = self.request_get(url)
+            if jsdata is not None: self.items = self.items + jsdata['results']
+        self.adapt()
+
+    def adapt(self):
+        o = self.objeto
+        self.items = o.adapt(self.items)
+
+    def export(self, tipo='csv'):
+        if tipo.lower() == 'sql':
+            self.export_sql()
+        elif tipo.lower() == 'csv':
+            self.export_csv()
+        else:
+            print("No existe el metodo de exportacion: " + tipo.lower())
+
+    def export_sql(self):
+        ## No implementado
+        return None
+
+    def export_csv(self):
+        archivo = "indice_" + self.objeto.mercadolibre_id + ".csv"
+        if (self.debug): print("Guardando archivo", archivo)
+        self.items.to_csv(archivo, sep=";", decimal=",")
+
+
+ml = mercadolibreAPI()
+ml.set_debug(False)
+ml.search(inmuebles)
+ml.export()
+print("Fin")
